@@ -15,6 +15,8 @@ class RidesSearchPage extends ConsumerStatefulWidget {
 
 class _RidesSearchPageState extends ConsumerState<RidesSearchPage> {
   late final PlacesService _places;
+  late String _placesSession;
+  String _newSession() => 'sess_${DateTime.now().microsecondsSinceEpoch}';
 
   final _pickupCtrl = TextEditingController();
   final _dropCtrl = TextEditingController();
@@ -30,11 +32,17 @@ class _RidesSearchPageState extends ConsumerState<RidesSearchPage> {
   @override
   void initState() {
     super.initState();
+    _placesSession = _newSession(); // one token per search flow
     _places = PlacesService();
+
     // Pre-fill text fields from state if user navigated back
     final s = ref.read(rideSearchProvider);
     _pickupCtrl.text = s.pickupAddress;
     _dropCtrl.text = s.dropoffAddress;
+  }
+
+  void _resetSession() {
+    _placesSession = _newSession();
   }
 
   @override
@@ -55,8 +63,15 @@ class _RidesSearchPageState extends ConsumerState<RidesSearchPage> {
       setState(() => _pickupSuggestions = const []);
       return;
     }
+
     try {
-      final res = await _places.autocomplete(v, language: 'pt', country: 'pt');
+      // 👇 Pass the shared Places session token
+      final res = await _places.autocomplete(
+        v,
+        language: 'pt',
+        country: 'pt',
+        sessionToken: _placesSession,
+      );
       if (!mounted) return;
       setState(() => _pickupSuggestions = res);
     } finally {
@@ -73,8 +88,15 @@ class _RidesSearchPageState extends ConsumerState<RidesSearchPage> {
       setState(() => _dropSuggestions = const []);
       return;
     }
+
     try {
-      final res = await _places.autocomplete(v, language: 'pt', country: 'pt');
+      // 👇 Pass the shared Places session token
+      final res = await _places.autocomplete(
+        v,
+        language: 'pt',
+        country: 'pt',
+        sessionToken: _placesSession,
+      );
       if (!mounted) return;
       setState(() => _dropSuggestions = res);
     } finally {
@@ -83,7 +105,12 @@ class _RidesSearchPageState extends ConsumerState<RidesSearchPage> {
   }
 
   Future<void> _selectSuggestion(PlaceSuggestion s) async {
-    final details = await _places.details(s.placeId, language: 'pt');
+    // 👇 Pass the same token for details to tie it to the autocomplete session
+    final details = await _places.details(
+      s.placeId,
+      language: 'pt',
+      sessionToken: _placesSession,
+    );
     if (!mounted || details == null) return;
 
     final notifier = ref.read(rideSearchProvider.notifier);
@@ -142,12 +169,12 @@ class _RidesSearchPageState extends ConsumerState<RidesSearchPage> {
             decoration: InputDecoration(
               labelText: 'Pickup',
               prefixIcon: const Icon(Icons.my_location),
-              suffixIcon: _loadingPickup ? const Padding(
+              suffixIcon: _loadingPickup
+                  ? const Padding(
                 padding: EdgeInsets.all(10),
                 child: SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2)),
-              ) : (s.pickupLat != null
-                  ? const Icon(Icons.check_circle, color: Colors.green)
-                  : null),
+              )
+                  : (s.pickupLat != null ? const Icon(Icons.check_circle, color: Colors.green) : null),
             ),
             textInputAction: TextInputAction.next,
             onChanged: _onPickupChanged,
@@ -156,12 +183,14 @@ class _RidesSearchPageState extends ConsumerState<RidesSearchPage> {
             Card(
               margin: const EdgeInsets.only(top: 6, bottom: 10),
               child: Column(
-                children: _pickupSuggestions.map((p) => ListTile(
+                children: _pickupSuggestions
+                    .map((p) => ListTile(
                   dense: true,
                   leading: const Icon(Icons.place_outlined),
                   title: Text(p.description, maxLines: 2, overflow: TextOverflow.ellipsis),
                   onTap: () => _selectSuggestion(p),
-                )).toList(),
+                ))
+                    .toList(),
               ),
             ),
 
@@ -172,12 +201,12 @@ class _RidesSearchPageState extends ConsumerState<RidesSearchPage> {
             decoration: InputDecoration(
               labelText: 'Drop-off',
               prefixIcon: const Icon(Icons.flag_outlined),
-              suffixIcon: _loadingDrop ? const Padding(
+              suffixIcon: _loadingDrop
+                  ? const Padding(
                 padding: EdgeInsets.all(10),
                 child: SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2)),
-              ) : (s.dropoffLat != null
-                  ? const Icon(Icons.check_circle, color: Colors.green)
-                  : null),
+              )
+                  : (s.dropoffLat != null ? const Icon(Icons.check_circle, color: Colors.green) : null),
             ),
             textInputAction: TextInputAction.done,
             onChanged: _onDropChanged,
@@ -186,12 +215,14 @@ class _RidesSearchPageState extends ConsumerState<RidesSearchPage> {
             Card(
               margin: const EdgeInsets.only(top: 6, bottom: 10),
               child: Column(
-                children: _dropSuggestions.map((p) => ListTile(
+                children: _dropSuggestions
+                    .map((p) => ListTile(
                   dense: true,
                   leading: const Icon(Icons.place_outlined),
                   title: Text(p.description, maxLines: 2, overflow: TextOverflow.ellipsis),
                   onTap: () => _selectSuggestion(p),
-                )).toList(),
+                ))
+                    .toList(),
               ),
             ),
 
@@ -222,9 +253,7 @@ class _RidesSearchPageState extends ConsumerState<RidesSearchPage> {
                     labelText: 'Passengers',
                     prefixIcon: Icon(Icons.group_outlined),
                   ),
-                  items: [1,2,3,4,5,6,7,8]
-                      .map((v) => DropdownMenuItem(value: v, child: Text('$v')))
-                      .toList(),
+                  items: [1, 2, 3, 4, 5, 6, 7, 8].map((v) => DropdownMenuItem(value: v, child: Text('$v'))).toList(),
                   onChanged: (v) => ref.read(rideSearchProvider.notifier).setPax(v ?? 1),
                 ),
               ),
@@ -236,9 +265,7 @@ class _RidesSearchPageState extends ConsumerState<RidesSearchPage> {
                     labelText: 'Bags',
                     prefixIcon: Icon(Icons.luggage_outlined),
                   ),
-                  items: [0,1,2,3,4,5,6]
-                      .map((v) => DropdownMenuItem(value: v, child: Text('$v')))
-                      .toList(),
+                  items: [0, 1, 2, 3, 4, 5, 6].map((v) => DropdownMenuItem(value: v, child: Text('$v'))).toList(),
                   onChanged: (v) => ref.read(rideSearchProvider.notifier).setLuggage(v ?? 0),
                 ),
               ),
