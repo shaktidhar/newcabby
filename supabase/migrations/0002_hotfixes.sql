@@ -9,3 +9,12 @@ create policy vehicles_public_read_active
 on public.vehicles
 for select to anon, authenticated
 using (active = true and verified = true);
+
+grant select on public.active_vehicles to anon, authenticated;
+
+create policy vehicles_admin_read_all
+on public.vehicles
+for select
+using (exists (select 1 from public.users u where u.id = auth.uid() and u.role='admin'));
+
+
