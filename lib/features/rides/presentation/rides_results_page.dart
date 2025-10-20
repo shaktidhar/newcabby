@@ -3,11 +3,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart'; // kIsWeb, debugPrint
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:go_router/go_router.dart';
 
+
+import '../../../core/auth/auth_providers.dart';
 import '../../rides/state/ride_search_state.dart';
 import '../../../core/services/distance_matrix_service.dart';
 import '../../../core/services/booking_service.dart';
-import 'package:flutter_stripe/flutter_stripe.dart' as stripe; // OK to import; we just won't call on web.
+import 'package:flutter_stripe/flutter_stripe.dart' as stripe; // We won’t call on web dev
 
 double estimateLocal({
   required double km,
@@ -41,6 +44,26 @@ class _RidesResultsPageState extends ConsumerState<RidesResultsPage> {
   bool _loading = true;
   bool _busy = false;
 
+  /// 🔐 Gate: if not signed in, remember the user's intent and route them to Account tab.
+  /// Returns true if already signed in; false after redirect.
+  Future<bool> _ensureSignedInOrRedirect(String vehicleTypeId) async {
+    final signedIn = ref.read(isSignedInProvider);
+    if (signedIn) return true;
+
+    // Remember the intent for post-login resume
+    ref.read(pendingActionProvider.notifier).set(PendingBook(vehicleTypeId));
+
+    // Navigate to the Account route
+    if (mounted) {
+      // Use your actual account route if different
+      context.go('/account');
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please sign in to book.')),
+      );
+    }
+    return false;
+  }
+
   @override
   void initState() {
     super.initState();
@@ -53,6 +76,7 @@ class _RidesResultsPageState extends ConsumerState<RidesResultsPage> {
       final res = await supa.from('vehicle_types').select().eq('active', true);
       _types = (res as List).cast<Map<String, dynamic>>();
 
+      // DistanceMatrix is best-effort (don’t block UI if it fails)
       try {
         final s = ref.read(rideSearchProvider);
         if (s.pickupLat != null && s.dropoffLat != null) {
@@ -78,13 +102,17 @@ class _RidesResultsPageState extends ConsumerState<RidesResultsPage> {
     }
   }
 
+  /// 💳 Card flow (mobile): we call Stripe if client_secret is returned.
+  /// On web dev, we warn and suggest Cash (no Stripe init on web to avoid Platform crash).
   Future<void> _onBookPressed(String vehicleTypeId) async {
+    // ✅ NEW: Ensure signed-in (or redirect to Account). If false, stop here.
+    if (!await _ensureSignedInOrRedirect(vehicleTypeId)) return;
+
     if (_busy) return;
     setState(() => _busy = true);
     try {
       final s = ref.read(rideSearchProvider);
 
-      // Create booking in "pending_payment" (mobile) or "pending" (web fallback)
       final result = await BookingService().createBooking(
         pickupAddress: s.pickupAddress,
         pickupLat: s.pickupLat!,
@@ -101,17 +129,18 @@ class _RidesResultsPageState extends ConsumerState<RidesResultsPage> {
       );
 
       if (kIsWeb) {
-        // Web: we didn’t init Stripe to avoid the Platform crash.
+        // Web: don’t present PaymentSheet in dev. (We disabled mobile-style Stripe init on web.)
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('Booking created. Card payment is disabled on web dev build — use Cash for now.'),
           ),
         );
+        // TODO: optionally navigate to a “Booking created” summary.
         return;
       }
 
-      // Mobile: present Stripe Payment Sheet if we got a client secret
+      // Mobile: if we have a client secret, present PaymentSheet.
       final clientSecret = result.clientSecret;
       if (clientSecret != null && clientSecret.isNotEmpty) {
         await stripe.Stripe.instance.initPaymentSheet(
@@ -144,7 +173,11 @@ class _RidesResultsPageState extends ConsumerState<RidesResultsPage> {
     }
   }
 
+  /// 💵 Cash flow: requires auth as well; creates booking without Stripe.
   Future<void> _onBookCashPressed(String vehicleTypeId) async {
+    // ✅ NEW: Ensure signed-in (or redirect to Account). If false, stop here.
+    if (!await _ensureSignedInOrRedirect(vehicleTypeId)) return;
+
     if (_busy) return;
     setState(() => _busy = true);
     try {
@@ -169,7 +202,7 @@ class _RidesResultsPageState extends ConsumerState<RidesResultsPage> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Cash booking created. Ref: ${result.booking['id']}')),
       );
-      // TODO: navigate to a "cash booking pending" screen
+      // TODO: navigate to “cash booking pending” screen
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -219,7 +252,7 @@ class _RidesResultsPageState extends ConsumerState<RidesResultsPage> {
           )
               : null;
 
-          final vehicleTypeId = (t['id'] as String?) ?? '';
+          final vehicleTypeId = (t['id'] as String?) ?? ''; // ensure SELECT includes id
 
           return Card(
             child: Padding(
@@ -240,11 +273,14 @@ class _RidesResultsPageState extends ConsumerState<RidesResultsPage> {
                       est != null ? '€${est.toStringAsFixed(2)}' : '—',
                       style: const TextStyle(fontWeight: FontWeight.bold),
                     ),
+                    // 👇 NOTE: We intentionally removed any ListTile.onTap here
+                    // so actions are explicit on the two buttons below.
                   ),
                   const SizedBox(height: 8),
                   Row(
                     mainAxisAlignment: MainAxisAlignment.end,
                     children: [
+                      // CASH booking — gated by auth
                       OutlinedButton(
                         onPressed: (_busy || vehicleTypeId.isEmpty)
                             ? null
@@ -252,13 +288,17 @@ class _RidesResultsPageState extends ConsumerState<RidesResultsPage> {
                         child: const Text('Cash'),
                       ),
                       const SizedBox(width: 8),
+                      // CARD booking — gated by auth
                       FilledButton(
                         onPressed: (_busy || vehicleTypeId.isEmpty)
                             ? null
                             : () => _onBookPressed(vehicleTypeId),
                         child: _busy
                             ? const SizedBox(
-                            height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                          height: 18,
+                          width: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
                             : Text(kIsWeb ? 'Book (Card: mobile only)' : 'Book & Pay'),
                       ),
                     ],
